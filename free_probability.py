@@ -3,36 +3,22 @@ import numpy as np
 import scipy as scp
 import matplotlib.pyplot as plt
 from functools import reduce
+from .cumulants import free_cumulant
+from .cumulants_eth import *
 
-#######################
-# AUXILIARY FUNCTIONS #
-#######################
-
-def _gaussian(x, mu, sig):
-    """Gaussian function with mean mu and variance sig"""
-    return 1./(np.sqrt(2.*np.pi)*sig)*np.exp(-((x - mu)/sig)**2/2)
-    
-    
-def _delta_tau(w, w0=0, tau=10, unitary=True):
-    """Gaussian approximating a Delta function. Note that this needs to have a period of 2 pi for the unitary case."""
-    
-    if unitary:
-        return _gaussian(w, w0, 1/tau) + _gaussian(w, w0 - 2*np.pi, 1/tau) + _gaussian(w, w0 + 2*np.pi, 1/tau)
-    else:
-        return _gaussian(w, w0, 1/tau)
-    
-##################
-# CUMULANT CLASS #
-##################
+##############################
+# ETH/FREE PROBABILITY CLASS #
+##############################
 
 class FreeModel:
-    """Calculates the cumulants from FP theory and relevant quantities for Quantum Chaos"""
+    """Compute meaningful quantities for ETH (Eigenstate Thermalization Hypothesis), Free Probability (FP) and Quantum chaos."""
 
     def __init__(self, model, unitary=True):
 
         # Parameters of the model
         self.matrix = model
         self.unitary = unitary
+        self.D = model.shape[0]
         self.diagonalization = None
         self.A = None
         self.omega = None
@@ -41,20 +27,6 @@ class FreeModel:
         self.spacing_distribution = None
         self.spacing_ratio = None
         self.mean_spacing_ratio = None
-
-        # Correlations and cumulants
-        self.otoc = {}
-        self.k2 = {}
-        self.k4 = {}
-        self.cactus = {}
-        self.crossing = {}
-
-        # Correlations and cumulants in frequency domain
-        self.otoc_freq = {}
-        self.k2_freq = {}
-        self.k4_freq = {}
-        self.cactus_freq = {}
-        self.crossing_freq = {}
 
     ############################
     # OPERATOR DIAGONALIZATION #
@@ -71,72 +43,58 @@ class FreeModel:
         
         op : array 
             D x D operator of interest in the computational basis.
-        
-        model : array 
-            Floquet operator/unitary evolution/Hamiltonian.
-            
-        unitaryEvol : bool, optional
-            ω_{ij} is defined as ω_{ij} := φ_i - φ_j when true and 
-                              as ω_{ij} := E_i - E_j when false.
 
         sorted: bool, optional
-            Sorts the eigenspectrum and, correspondingly, the eigenstates
+            Sorts the eigenspectrum and, correspondingly, the eigenstates.
                               
         Returns
         -------
         
-        (A, omega) : (array, array)
+        (A, omega) : (np.array, np.array)
             Returns the operator in the eigenbasis, denoted by A_{mn}
             and the eigenspectra (differences) ω_{ij}.        
         """ 
 
         if truncate is not None:
-            sorted = True
+            sorted_eigs = True
         
-        # Hilbert space dimension
         self.operator = op
-        self.D = len(op)
         
         # Performs the diagonalization (if unsolved)
-        if self.diagonalization is None:
-            self.diagonalize()
-    
-        # Extracts eigenvalues and eigenstates
+        self.diagonalize()
         eig_vals, eig_states = self.diagonalization
         
         # Complex angles should be used in the case of unitary evolution
         if self.unitary:
-            eig_vals=np.angle(eig_vals)
+            eig_vals = np.angle(eig_vals)
             
         # Order eigenstates
         if sorted_eigs:
             ordr = np.argsort(eig_vals)
             eig_vals = eig_vals[ordr]
-            eig_states = eig_states[:,ordr]
+            eig_states = eig_states[:, ordr]
 
             # Put eigenvalues in angle form and orders the eig vales and eig states
             self.diagonalization = eig_vals, eig_states
-            
+
+        # Phase differences
         omega = np.array([[Em - En for En in eig_vals] for Em in eig_vals])
     
-        # Operator of interest in the eigenbasis. TODO: transpose of this?
-        A = eig_states.conj().T@op@eig_states
+        # Operator of interest in the eigenbasis
+        self.A = eig_states.conj().T @ op @ eig_states
         
-        # Manually sets the diagonal to zero in the eigenbasis
+        # Manually sets the diagonal to zero in the eigenbasis (if desired)
         if delete_diagonal:
             for i in range(self.D):
-                A[i][i] = 0
+                self.A[i][i] = 0
 
-        # Sets the frequencies and operator in the model eigenbasis
-        self.A = A
-
-        # IMPORTANT: remove unphysical phase differences. 
-        # We should restrict the phases to the intervals [0, 2pi]
+        # Restrict the phases to the interval [0, 2pi]
         self.omega = np.mod(omega, 2*np.pi) if self.unitary else omega
 
+        # Truncate the spectrum and the dimensionality of the model accordingly
         if truncate:
             i_max = int(self.D*truncate)
-            self.A  = self.A[i_max:-i_max, i_max:-i_max] 
+            self.A = self.A[i_max:-i_max, i_max:-i_max] 
             self.omega = self.omega[i_max:-i_max, i_max:-i_max] 
             self.D = len(self.A)
             
@@ -144,10 +102,15 @@ class FreeModel:
         
     def diagonalize(self):
         """
-        Diagonalizes the unitary/Hamiltonian
+        Diagonalizes the unitary/Hamiltonian. Uses Schur decomposition in the unitary case
+        and eigh for the Hamiltonian case for efficiency.
         """
+
+        # Skips the method if already diagonalized
+        if self.diagonalization is not None:
+            return self
+
         if self.unitary:
-            # Schur decomposition
             schur_decomposition = scp.linalg.schur(self.matrix)
 
             # Extracts the eigenvalues in the diagonal
@@ -174,8 +137,7 @@ class FreeModel:
         """ 
         
         # Performs the diagonalization (if unsolved)
-        if self.diagonalization is None:
-            self.diagonalize()
+        self.diagonalize()
     
         # Extracts eigenvalues and eigenstates
         eig_vals, _ = self.diagonalization
@@ -200,406 +162,166 @@ class FreeModel:
         self.mean_spacing_ratio = np.mean(self.spacing_ratio)
 
         return self
-    
-    ###############
-    # TIME DOMAIN #
-    ###############
+  
+    ########################
+    # DYNAMICAL QUANTITIES #
+    ########################
 
-    #------#
-    # OTOC #
-    #------#
-    
-    def _compute_OTOC(self, t):
-        """Evaluates the OTOC <A(t) A A(t) A>."""
-        if t in self.otoc.keys():
-            return self.otoc[t]
-            
-        At = self.A * np.exp(self.omega*1j*t)
-        self.otoc[t] = np.trace(At@self.A@At@self.A)/self.D
+    def heisenberg_evolution(self, A, t):
+        """Returns the time-evolved operator A(t) in the Heisenberg picture at time t."""
         
-        return self.otoc[t]
+        # Performs the diagonalization (if unsolved)
+        self.diagonalize()
+        eig_vals, eig_vecs = self.diagonalization  
 
-    def compute_OTOC(self, t):
-        """Vectorizes the method."""
-        return np.vectorize(self._compute_OTOC, excluded='self')(t)
-
-    #----------------#
-    # Cumulant K2(t) #
-    #----------------#
+        # Unitary at time t
+        U_t = eig_vecs @ np.diag(eig_vals**t) @ eig_vecs.conj().T
+        
+        return U_t.conj().T @ A @ U_t
     
-    def _compute_K2(self, t):
+    def OTOC(self, A, B, t_min, t_max, k_max=1):
         """
-        Evaluates the second order cumulant k2(t):=Σ e^(i ω_{ij} t) |A_{ij}|^2
-        at time t. Summed over i != j.
-        """
-        
-        if t in self.k2.keys():
-            return self.k2[t]
-            
-        # Computes the cumulant
-        omega_t = np.exp(self.omega*1j*t)
-        At = self.A * omega_t
-        k2 = np.einsum('ij,ji', At, self.A, optimize=True)                           
-        self.k2[t] = k2/self.D 
-        
-        return self.k2[t]
-        
-    def compute_K2(self, t):
-        """Vectorizes the method."""
-        return np.vectorize(self._compute_K2, excluded='self')(t)
-
-    #----------------#
-    # Cactus diagram #
-    #----------------#
-    
-    def _compute_cactus(self, t1, t2=None):
-        """Evaluates the cactus diagram at times t1 and t2."""
-               
-        if t2 is None:
-            t2 = t1
-            
-        if (t1, t2) in self.cactus.keys():
-            return self.cactus[(t1, t2)]
-
-        # Computes the cactus diagram
-        At1 = self.A * np.exp(self.omega*1j*t1)   
-        At2 = self.A * np.exp(self.omega*1j*t2)   
-        cactus = np.einsum('ij,ji,ik,ki', At2, self.A, At1, self.A, optimize=True)
-        self.cactus[(t1, t2)] = cactus/self.D - self.compute_crossing(t1 + t2)
-
-        return self.cactus[(t1, t2)]
-        
-    def compute_cactus(self, t1, t2=None):
-        """Vectorizes the method."""
-        return np.vectorize(self._compute_cactus, excluded='self')(t1, t2)
-
-    # ------------------#
-    # Crossing diagrams #
-    # ----------------- #
-    
-    def _compute_crossing(self, t):
-        """Evaluates the crossing diagrams k2(t):=Σ |A_{ij}|^4."""
-        
-        if t in self.crossing.keys():
-            return self.crossing[t]
-            
-        # Computes the diagram
-        omega_t = np.exp(self.omega*1j*t)
-        At = self.A * omega_t  
-        crossing = np.einsum('ij,ji,ij,ji', At, self.A, At, self.A, optimize=True)
-        self.crossing[t] = crossing/self.D 
-                                     
-        return self.crossing[t]
-        
-    def compute_crossing(self, t):
-        """Vectorizes the method"""
-        return np.vectorize(self._compute_crossing, excluded='self')(t)
-
-    # -------------- #
-    # Cumulant K4(t) #
-    # -------------- #
-    
-    def _compute_K4(self, t):
-        """Evaluates the fourth order cumulant."""
-
-        # Be sure that everything here is being computed for the same t
-        # CAUTION: check this
-        self.k4[t] = self.compute_OTOC(t) + self.compute_crossing(t) - 2*self.compute_cactus(t)
-            
-        return self.k4[t]
-        
-    def compute_K4(self, t):
-        """Vectorizes the method."""
-        return np.vectorize(self._compute_K4, excluded='self')(t)
-
-    #-----------------#
-    # Other functions #
-    #-----------------#
-    
-    def factorization_ratio(self, t=0):
-        """
-        Evaluates factorization parameter r(t) := cactus(t)/|k_2(t)|². 
-        If t=None computes r(t) for the current time
-        """
-        
-        return self.compute_cactus(t)/self.compute_K2(t)**2
-
-    def plotETH(self, t_lst, show_cactus=False, show_crossing=False):
-        """
-        Plots the OTOCs and the diagrams for the model as a function of time.
+        Computes mixed k-th OTOC between A and B.
 
         Parameters
         ----------
         
-        t_lst : array 
-            List of points in time where the evaluations should be performed.
+        A, B : np.array 
+            Operators.
         
-        show_cactus : bool , optional.
-            Computes the cacus diagram cac(t, t)
+        t_min, t_max : float 
+            Minimum and maximum time for the dynamics.
             
-        show_crossing : bool, optional
-            Computes the crossing partition.
-        """
-        
-        # Plots
-        fig = plt.figure(figsize=(6, 4))
-        ax = fig.add_subplot()
-
-        # Optional cactus and crossing partitions
-        if show_cactus:
-            ax.plot(t_lst, np.abs(self.compute_cactus(t_lst))**2, color="magenta", label=r'$\mathrm{Cactus}$', marker='s', markersize=6)
-
-        if show_crossing:
-            ax.plot(t_lst, np.abs(self.compute_crossing(t_lst))**2, color="orange", label=r'$\mathrm{Crossing}$', marker='x', markersize=10)
-                    
-        # K2
-        ax.plot(t_lst, 2*np.abs(self.compute_K2(t_lst))**2
-                , marker='*', markersize=10, markeredgewidth=1, markeredgecolor="black", label=r'$2|k_2(t)|^2$')
-
-        # OTOC
-        ax.plot(t_lst, np.real(self.compute_OTOC(t_lst))
-                , color="red", marker='d', markersize=5, markeredgewidth=1, markeredgecolor="black", label=r'$\langle A(t)AA(t)A\rangle$')
-
-        # K4
-        ax.plot(t_lst, np.real(self.compute_K4(t_lst))       
-                , color="green", marker='o', markersize=5, markeredgewidth=1, markeredgecolor="black", label='$k_4(t)$')
-
-        # K2 + K4
-        ax.plot(t_lst, 2*np.abs(self.compute_K2(t_lst))**2 + np.real(self.compute_K4(t_lst))
-                , color="black", linestyle='dashed', label=r'$2|k_2(t)|^2+k_4(t)$')
-
-        # Labels
-        ax.set_xlabel(r'$t$')
-        ax.set_ylabel(r'$\mathrm{Contribution}$')
-        ax.legend(loc="upper right")    
-        
-        plt.show()
-
-    ####################
-    # FREQUENCY DOMAIN #
-    ####################
-    
-    #------#
-    # OTOC #
-    #------#
-    
-    def _compute_OTOC_freq(self, w1, w2=None, w3=None):
-        """
-        Evaluates the OTOC in the frequency domain.
-        """
-
-        # Avoids double computation
-        if (w1, w2, w3) in self.otoc_freq.keys():
-            return self.otoc_freq[(w1, w2, w3)]
-
-        if w2 is None:
-            w2 = w1
+        k_max : int
+            Maximum OTOC order k.
             
-        if w3 is None:
-            w3 = -w1   
+        Returns
+        -------
+        
+        np.array:
+        - Axis 0 (rows): time axis.
+        - Axis 1 (columns): k-th OTOC at time t.
+        """
+        
+        # Loops over time
+        otoc = []
+        for t in range(t_min, t_max):
 
-        # Computes the OTOC
-        Aw3 = self.A * _delta_tau(w3 - self.omega)
-        Aw2 = self.A * _delta_tau(w2 - self.omega)
-        Aw1 = self.A * _delta_tau(w1 - self.omega)
-        self.otoc_freq[(w1, w2, w3)] = np.trace(Aw1@Aw2@Aw3@self.A)/self.D
-        
-        return self.otoc_freq[(w1, w2, w3)]
-        
-    def compute_OTOC_freq(self, w1, w2=None, w3=None):
-        """Vectorizes the method."""
-        return np.vectorize(self._compute_OTOC_freq, excluded='self')(w1, w2, w3)
+            A_t = self.heisenberg_evolution(A, t)
     
-    #----------------#
-    # Cumulant K2(t) #
-    #----------------#
-    
-    def _compute_K2_freq(self, w):
-        """
-        Evaluates the second order cumulant in the frequency domain.
-        """
-
-        # Avoids double computation
-        if w in self.k2_freq.keys():
-            return self.k2_freq[w]
-            
-        # Computes the cumulant. Uses lambda function for efficient mapping
-        #f = lambda x: _delta_tau(x, 0, 10**(-5))
-        Aw = self.A * _delta_tau(w - self.omega, unitary=self.unitary)
-        k2 = np.einsum('ij,ji', Aw, self.A, optimize=True)                           
-        self.k2_freq[w] = k2/self.D 
-        
-        return self.k2_freq[w]
-
-    def compute_K2_freq(self, w):
-        """Vectorizes the method."""
-        return np.vectorize(self._compute_K2_freq, excluded='self')(w)
-        
-    def _compute_cactus_freq(self, w1, w2=None):
-        """
-        Evaluates the cactus diagram at frequencies w1 and w2.
-        """
-
-        # Avoids double computation
-        if w2 is None:
-            w2 = w1
-        
-        if (w1, w2) in self.cactus_freq.keys():
-            return self.cactus_freq[(w1, w2)]
-        
-        # Do I need the conjugates?
-        # Computes the cactus diagram
-        Aw1 = self.A * _delta_tau(w1 - self.omega, unitary=self.unitary)
-        Aw2 = self.A * _delta_tau(w2 - self.omega, unitary=self.unitary)
-        cactus = np.einsum('ij,ji,ik,ki', Aw1, self.A, Aw2, self.A, optimize=True) \
-                - np.einsum('ij,ji,ij,ji', Aw1, self.A, Aw2, self.A, optimize=True)
-        self.cactus_freq[(w1, w2)] = cactus/self.D
-        
-        return self.cactus_freq[(w1, w2)]
-        
-    def compute_cactus_freq(self, w1, w2=None):
-        """Vectorizes the method."""
-        return np.vectorize(self._compute_cactus_freq, excluded='self')(w1, w2)
-
-    # ------------------#
-    # Crossing diagrams #
-    # ----------------- #
-    
-    def _compute_crossing_freq(self, w):
-        """
-        Evaluates the crossing diagrams in the frequency domain.
-        """
-
-        # Avoids double computation
-        if w in self.crossing_freq.keys():
-            return self.crossing_freq[w]
-        
-        # Computes the diagram
-        Aw1 = self.A * _delta_tau(w - self.omega, unitary=self.unitary)
-        crossing = np.einsum('ij,ji,ij,ji', Aw1, self.A, self.A, self.A, optimize=False)
-        self.crossing_freq[w] = crossing/self.D 
-                                     
-        return self.crossing_freq[w]
-    
-    def compute_crossing_freq(self, w):
-        """Vectorizes the method."""
-        return np.vectorize(self._compute_crossing_freq, excluded='self')(w)
-
-    #----------------#
-    # Cumulant K4(t) #
-    #----------------#
-    
-    def _compute_K4_freq(self, w1, w2=None, w3=None):
-        """
-        Evaluates the fourth order cumulant.
-        """
-        
-        if w2 is None:
-            w2 = w1
-            
-        if w3 is None:
-            w3 = -w1     
-
-        Aw1 = self.A * _delta_tau(w1 - self.omega, unitary=self.unitary)
-        Aw2 = self.A * _delta_tau(w2 - self.omega, unitary=self.unitary)
-        Aw3 = self.A * _delta_tau(w3 - self.omega, unitary=self.unitary)
-
-        # All indices combinations; k = i; j = l; k = i & j = i, respectively
-        k4 = np.einsum('ij,jk,kl,li', Aw1, Aw2, Aw3, self.A, optimize=True)\
-        - np.einsum('ij,ji,il,li', Aw1, Aw2, Aw3, self.A, optimize=True)\
-        - np.einsum('ij,jk,kj,ji', Aw1, Aw2, Aw3, self.A, optimize=True)\
-        + np.einsum('ij,ji,ij,ji', Aw1, Aw2, Aw3, self.A, optimize=True) 
-
-        self.k4_freq[(w1, w2, w3)] = k4/self.D 
-                                    
-        return self.k4_freq[(w1, w2, w3)]
-
-    def compute_K4_freq(self, w1, w2=None, w3=None):
-        """Vectorizes the method."""
-        return np.vectorize(self._compute_K4_freq, excluded='self')(w1, w2, w3)
-        
-    ########################
-    # ARBITRARY CUMULANTS  #
-    ########################
-
-    def _operator_lst(self, op_lst, t_lst):
-        """Evaluates the time dependent operators A_1(t_1), A_2(t_2), ..., A_q(t_q)"""
-
-        q = len(op_lst)      
-        A_lst = [[]] * q
-
-        # Performs the diagonalization (if unsolved)
-        if self.diagonalization is None:
-            self.diagonalize()
-    
-        # Extracts eigenvalues and eigenstates
-        _, eig_states = self.diagonalization        
-        
-        for i in range(q):
-            A_eig = eig_states.conj().T @ op_lst[i] @ eig_states
-            
-            for _ in range(self.D):
-                A_eig[_][_] = 0
+            # Computes the k-th OTOC at time t, constructing the product <A(t)A ... A(t)A>
+            prod, otoc_k = A_t @ B, []
+            for k in range(k_max):
+                otoc_k.append(np.trace(prod))
+                prod = (A_t @ B) @ prod
                 
-            A_lst[i] =  A_eig * np.exp(self.omega*1j*t_lst[i])
+            otoc.append(otoc_k)
             
-        return A_lst    
-    
-    def compute_OTOC_mixed(self, op_lst, t_lst):
-        """Evaluates the OTOC <A_1(t_1) A_2(t_2) ... A_q(t_q)>."""
-     
-        A_lst = self._operator_lst(op_lst, t_lst)
+        return np.array(otoc)/self.D
+
+    def dynamical_cumulant(self, A, B, t_min, t_max, k_max=1, moment_type="infinite_temperature"):
+        """
+        Computes the 2k-th dynamical cumulants k(A(t), B, A(t), B,...) from the free probability definition.
+
+        Parameters
+        ----------
         
-        return np.trace(reduce(np.matmul, A_lst))/self.D
-
-    #----------------#
-    # Cactus diagram #
-    #----------------#
-    
-    def compute_cactus_mixed(self, op_lst, t_lst):
-               
-        A_lst = self._operator_lst(op_lst, t_lst)
-        return 1/self.D * np.einsum('ij,ji,ik,ki', *A_lst, optimize=True)
-
-    # ------------------#
-    # Crossing diagrams #
-    # ----------------- #
-    
-    def compute_crossing_mixed(self, op_lst, t_lst):
-        """Evaluates the crossing diagrams k2(t):=Σ |A_{ij}|^4."""
+        A, B : np.array 
+            Operators.
         
-        A_lst = self._operator_lst(op_lst, t_lst) 
-        return 1/self.D *  np.einsum('ij,ji,ij,ji', *A_lst, optimize=True)
-        
-    # -------------- #
-    # Cumulant K4(t) #
-    # -------------- #
+        t_min, t_max : float 
+            Minimum and maximum time for the dynamics.
+            
+        k_max : int
+            Maximum cumulant order k.
     
-    def compute_K4_mixed(self, op_lst, t_lst):
-
-        A_lst = self._operator_lst(op_lst, t_lst) 
-        return self.compute_OTOC(t) + self.compute_crossing(t) - 2*self.compute_cactus(t)
+        moment_type: int
+            Functional used to compute the moments. The default choices corresponds to Tr(A(t) B A(t) B....)/D,
+            agreein with the (normalized) OTOC.
+            
+        Returns
+        -------
         
-class FreeMatrix(FreeModel):
-    """Calculates the cumulants for RMT theory - with no frequency structure. Normalized by default. Inherits from the FreeModel class."""
+        np.array:
+        - Axis 0 (rows): time axis.
+        - Axis 1 (columns): 2k-th cumulant at time t.
+        """
+        
+        # Loops over time
+        dynamical_cumulant = []
+        for t in range(t_min, t_max):
+
+            # Dynamics
+            A_t = self.heisenberg_evolution(A, t)
+
+            # Computes mixed cumulant up to order k_max
+            cumulant_k = []
+            for k in range(1, k_max + 1):
+                cumulant_k.append(free_cumulant([A_t, B] * k, moment_type=moment_type))
+
+            dynamical_cumulant.append(cumulant_k)
+            
+        return np.array(dynamical_cumulant)
+
+    ################################
+    # ETH CUMULANTS IN TIME DOMAIN #
+    ################################
+
+    def _initialize_operator_eigenbasis(self, A, B):
+        """Write down B in eigenbasis (or set it equal to A if undefined)."""
+        
+        _, eig_states = self.diagonalization
+
+        if B is None:
+            return self.A
+        else:
+            return eig_states.conj().T @ B @ eig_states
+                
+    def eth_cumulant(self, order, t_min, t_max, A, B=None):
+        """
+        Computes the mixed ETH cumulant of given order.
+
+        Parameters
+        ----------
+        
+        A, B : np.array 
+            Operators. If B is none, takes B = A.
+        
+        t_min, t_max : float 
+            Minimum and maximum time for the dynamics.
+            
+        Returns
+        -------
+        
+        np.array:
+            The cumulant from time t_min to t_max.
+        """
+        
+        # Initializes B
+        B = self._initialize_operator_eigenbasis(A, B)
+
+        return [compute_eth_cumulant(order, self.A * np.exp(self.omega*1j*t), B) for t in range(t_min, t_max)]
+
+    def eth_diagram(self, diagram_type, t_min, t_max, A, B=None):
+        """See eth_cumulant. Computes eth diagrams, such as crossing and cactus diagrams."""
+
+        # Initializes B
+        B = self._initialize_operator_eigenbasis(A, B)
+
+        return [compute_eth_diagram(order, self.A * np.exp(self.omega*1j*t), B) for t in range(t_min, t_max)]
+
+#######################
+# AUXILIARY FUNCTIONS #
+#######################
+
+def _gaussian(x, mu, sigma):
+    """Gaussian function with mean mu and variance sigma."""
+    return 1./(np.sqrt(2.*np.pi)*sigma)*np.exp(-((x - mu)/sigma)**2/2)
     
-    def __init__(self, random_matrix, unitary=True, normalized=True):
-
-        # Explicitly using super() to inherit FreeModel.__init__(self, model, unitary) 
-        super().__init__(random_matrix, unitary)
-
-        # Overrides these attributes with the given parameters
-        self.A = random_matrix
-        self.D = len(random_matrix)
-
-        # Standardizes the variance of the matrix
-        if normalized:
-            self.A = self.A/np.sqrt(self.D)
-
-        # Removes the frequency/time dependence
-        self.omega = np.full((self.D, self.D), 0)
-
-# try:
-#    myClassInstance.methodName()
-# except AttributeError:  
-#     raise AttributeError('The cumulants have not been computed')
+def _delta_tau(w, w0=0, tau=10, unitary=True):
+    """Gaussian approximating a Delta function. Note that this needs to have a period of 2 pi for the unitary case."""
+    
+    if unitary:
+        return _gaussian(w, w0, 1/tau) + _gaussian(w, w0 - 2*np.pi, 1/tau) + _gaussian(w, w0 + 2*np.pi, 1/tau)
+    else:
+        return _gaussian(w, w0, 1/tau)
