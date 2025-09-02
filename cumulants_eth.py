@@ -34,10 +34,10 @@ def compute_eth_cumulant(order, A, B):
     if order == 2:
         return 1/D * np.einsum('ij, ji', A, B, optimize=True) 
     elif order == 4:
-        return 1/D * (np.einsum('ij,jk,kl,li->', A, B, A, B, optimize=True)  # Full contraction
-                    - np.einsum('ij,ji,il,li->', A, B, A, B, optimize=True)  # i = k, cactus 
-                    - np.einsum('ij,jk,kj,ji->', A, B, A, B, optimize=True)  # j = l, cactus
-                    + np.einsum('ij,ji,ij,ji->', A, B, A, B, optimize=True)) # i = k and j = l, crossing 
+        return 1/D * (np.einsum('ij, jk, kl, li->', A, B, A, B, optimize=True)  # Full contraction
+                    - np.einsum('ij, ji, il, li->', A, B, A, B, optimize=True)  # i = k, cactus 
+                    - np.einsum('ij, jk, kj, ji->', A, B, A, B, optimize=True)  # j = l, cactus
+                    + np.einsum('ij, ji, ij, ji->', A, B, A, B, optimize=True)) # i = k and j = l, crossing 
     else:
         raise ValueError("Invalid cumulant order.")
 

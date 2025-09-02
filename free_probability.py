@@ -20,13 +20,15 @@ class FreeModel:
         self.unitary = unitary
         self.D = model.shape[0]
         self.diagonalization = None
-        self.A = None
         self.omega = None
 
         # Level spacing statistics
         self.spacing_distribution = None
         self.spacing_ratio = None
         self.mean_spacing_ratio = None
+
+        # Regularization used in the FT
+        # self.eth_regularization = lambda omega : _delta_tau(omega, unitary=unitary)
 
     ############################
     # OPERATOR DIAGONALIZATION #
@@ -82,14 +84,16 @@ class FreeModel:
     
         # Operator of interest in the eigenbasis
         self.A = eig_states.conj().T @ op @ eig_states
+        self.A_diag = np.array(np.diag(self.A))
         
         # Manually sets the diagonal to zero in the eigenbasis (if desired)
         if delete_diagonal:
+            
             for i in range(self.D):
                 self.A[i][i] = 0
 
-        # Restrict the phases to the interval [0, 2pi]
-        self.omega = np.mod(omega, 2*np.pi) if self.unitary else omega
+        # Restrict the phases to the interval [-pi, pi]
+        self.omega = np.mod(omega + np.pi, 2*np.pi) - np.pi if self.unitary else omega
 
         # Truncate the spectrum and the dimensionality of the model accordingly
         if truncate:
@@ -263,21 +267,34 @@ class FreeModel:
             
         return np.array(dynamical_cumulant)
 
-    ################################
-    # ETH CUMULANTS IN TIME DOMAIN #
-    ################################
+#################
+# ETH CUMULANTS #
+#################
 
-    def _initialize_operator_eigenbasis(self, A, B):
+    # ----------------------------
+    # ETH CUMULANTS IN TIME DOMAIN 
+    # ----------------------------
+
+    def _initialize_operator_eigenbasis(self, A, B, delete_diagonal):
         """Write down B in eigenbasis (or set it equal to A if undefined)."""
         
         _, eig_states = self.diagonalization
 
         if B is None:
-            return self.A
-        else:
-            return eig_states.conj().T @ B @ eig_states
+            B = A
+
+        # Basis transformation and deletes diagonal
+        A_no_diag = eig_states.conj().T @ A @ eig_states
+        B_no_diag = eig_states.conj().T @ B @ eig_states
+
+        if delete_diagonal:
+            for i in range(self.D):
+                A_no_diag[i][i] = 0
+                B_no_diag[i][i] = 0
+            
+        return A_no_diag, B_no_diag
                 
-    def eth_cumulant(self, order, t_min, t_max, A, B=None):
+    def eth_cumulant(self, order, t_lst, A, B=None, delete_diagonal=True):
         """
         Computes the mixed ETH cumulant of given order.
 
@@ -287,8 +304,8 @@ class FreeModel:
         A, B : np.array 
             Operators. If B is none, takes B = A.
         
-        t_min, t_max : float 
-            Minimum and maximum time for the dynamics.
+        t_lst : np.array
+            List of time steps over which the computation is performed.
             
         Returns
         -------
@@ -297,18 +314,38 @@ class FreeModel:
             The cumulant from time t_min to t_max.
         """
         
-        # Initializes B
-        B = self._initialize_operator_eigenbasis(A, B)
+        # Initializes 
+        A, B = self._initialize_operator_eigenbasis(A, B, delete_diagonal)
 
-        return [compute_eth_cumulant(order, self.A * np.exp(self.omega*1j*t), B) for t in range(t_min, t_max)]
+        return np.array([compute_eth_cumulant(order, A * np.exp(self.omega*1j*t), B) for t in t_lst])
 
-    def eth_diagram(self, diagram_type, t_min, t_max, A, B=None):
+    def eth_diagram(self, diagram_type, t_lst, A, B=None, delete_diagonal=True):
         """See eth_cumulant. Computes eth diagrams, such as crossing and cactus diagrams."""
 
-        # Initializes B
-        B = self._initialize_operator_eigenbasis(A, B)
+        # Initializes
+        A, B = self._initialize_operator_eigenbasis(A, B, delete_diagonal)
 
-        return [compute_eth_diagram(order, self.A * np.exp(self.omega*1j*t), B) for t in range(t_min, t_max)]
+        return np.array([compute_eth_diagram(diagram_type, A * np.exp(self.omega*1j*t), B) for t in t_lst])
+
+    # --------------------------------- 
+    # ETH CUMULANTS IN FREQUENCY DOMAIN 
+    # ---------------------------------
+    
+    def eth_cumulant_freq(self, order, w_lst, A, B=None, delete_diagonal=True):
+        """See eth_cumulant. Computes the mixed ETH cumulant of given order in the frequency domain, given the frequencies w_lst."""
+        
+        # Initializes
+        A, B = self._initialize_operator_eigenbasis(A, B, delete_diagonal)
+                
+        return np.array([compute_eth_cumulant(order, A * _delta_tau(w - self.omega), B) for w in w_lst])
+
+    def eth_diagram_freq(self, diagram_type, w_lst, A, B=None, delete_diagonal=True):
+        """See eth_cumulant_freq. Computes eth diagrams in frequency domain."""
+        
+        # Initializes
+        A, B = self._initialize_operator_eigenbasis(A, B, delete_diagonal)
+                
+        return np.array([compute_eth_diagram(diagram_type, A * _delta_tau(w - self.omega), B) for w in w_lst])
 
 #######################
 # AUXILIARY FUNCTIONS #
@@ -316,12 +353,14 @@ class FreeModel:
 
 def _gaussian(x, mu, sigma):
     """Gaussian function with mean mu and variance sigma."""
+    # return sigma/(sigma**2.5 + 2*sigma*(x - mu)**2)
+    
     return 1./(np.sqrt(2.*np.pi)*sigma)*np.exp(-((x - mu)/sigma)**2/2)
     
-def _delta_tau(w, w0=0, tau=10, unitary=True):
-    """Gaussian approximating a Delta function. Note that this needs to have a period of 2 pi for the unitary case."""
+def _delta_tau(w, w0=0, tau=25, unitary=True):
+    """Gaussian approximating a Delta function. Note that this needs to have a period of 2pi for the unitary case, corresponding to a Dirac comb."""
     
-    if unitary:
-        return _gaussian(w, w0, 1/tau) + _gaussian(w, w0 - 2*np.pi, 1/tau) + _gaussian(w, w0 + 2*np.pi, 1/tau)
+    if unitary:        
+        return 2 * np.pi * (_gaussian(w, w0, 1/tau) + _gaussian(w, w0 - 2*np.pi, 1/tau) + _gaussian(w, w0 + 2*np.pi, 1/tau))
     else:
-        return _gaussian(w, w0, 1/tau)
+        return 2 * np.pi * _gaussian(w, w0, 1/tau)
