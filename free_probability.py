@@ -1,17 +1,23 @@
-import math
 import numpy as np 
 import scipy as scp
-import matplotlib.pyplot as plt
-from functools import reduce
 from .cumulants import free_cumulant
 from .cumulants_eth import *
+from typing import Self
 
 ##############################
 # ETH/FREE PROBABILITY CLASS #
 ##############################
 
 class FreeModel:
-    """Compute meaningful quantities for ETH (Eigenstate Thermalization Hypothesis), Free Probability (FP) and Quantum chaos."""
+    """
+    Computes meaningful quantities for ETH (Eigenstate Thermalization Hypothesis), Free Probability (FP) and Quantum chaos.
+    
+    Parameters
+    ----------    
+    
+    unitary: bool, optional
+        Works with an unitary model if true.
+    """
 
     def __init__(self, model, unitary=True):
 
@@ -30,46 +36,48 @@ class FreeModel:
         # Regularization used in the FT
         # self.eth_regularization = lambda omega : _delta_tau(omega, unitary=unitary)
 
-    ############################
-    # OPERATOR DIAGONALIZATION #
-    ############################
-    
-    def diagonalize_operator(self, op, delete_diagonal=True, sorted_eigs=False, truncate=None):
+    ###################
+    # DIAGONALIZATION #
+    ###################           
+        
+    def diagonalize(self, sorted_eigs):
         """
-        Evaluates A_{mn} and  ω_{ij}, which are used in the calculation 
-        of the cumulants. I.e., expresses the operator and the frequencies 
-        in the eigenbasis of the model.
+        Diagonalizes the unitary/Hamiltonian. 
+        
+        Uses Schur decomposition in the unitary case and eigh for the Hamiltonian 
+        case for efficiency.
+
+        Evalutaes ω_{ij}, which are used in the calculation of correlations and 
+        cumulants. It expresses the operator and the frequencies in the eigenbasis 
+        of the model.
         
         Parameters
         ----------
         
-        op : array 
-            D x D operator of interest in the computational basis.
-
         sorted: bool, optional
-            Sorts the eigenspectrum and, correspondingly, the eigenstates.
-                              
-        Returns
-        -------
-        
-        (A, omega) : (np.array, np.array)
-            Returns the operator in the eigenbasis, denoted by A_{mn}
-            and the eigenspectra (differences) ω_{ij}.        
-        """ 
+            Sorts the eigenspectrum and, correspondingly, the eigenstates.       
+        """
 
-        if truncate is not None:
-            sorted_eigs = True
-        
-        self.operator = op
-        
-        # Performs the diagonalization (if unsolved)
-        self.diagonalize()
-        eig_vals, eig_states = self.diagonalization
-        
+        # Skips the method if already diagonalized
+        if self.diagonalization is not None:
+            return self
+
+        if self.unitary:
+            schur_decomposition = scp.linalg.schur(self.matrix)
+
+            # Extracts the eigenvalues in the diagonal
+            eig_vals, eig_states = np.diag(schur_decomposition[0]), schur_decomposition[1]
+            
+        else:
+            eig_vals, eig_states = np.linalg.eigh(self.matrix) 
+
+        # Sets eigenproblem solution as class attribute 
+        self.diagonalization = eig_vals, eig_states
+
         # Complex angles should be used in the case of unitary evolution
         if self.unitary:
             eig_vals = np.angle(eig_vals)
-            
+
         # Order eigenstates
         if sorted_eigs:
             ordr = np.argsort(eig_vals)
@@ -81,54 +89,17 @@ class FreeModel:
 
         # Phase differences
         omega = np.array([[Em - En for En in eig_vals] for Em in eig_vals])
-    
-        # Operator of interest in the eigenbasis
-        self.A = eig_states.conj().T @ op @ eig_states
-        self.A_diag = np.array(np.diag(self.A))
-        
-        # Manually sets the diagonal to zero in the eigenbasis (if desired)
-        if delete_diagonal:
-            
-            for i in range(self.D):
-                self.A[i][i] = 0
 
-        # Restrict the phases to the interval [-pi, pi]
+        # Set attribute and restrict the phases to the interval [-pi, pi] if unitary 
         self.omega = np.mod(omega + np.pi, 2*np.pi) - np.pi if self.unitary else omega
-
-        # Truncate the spectrum and the dimensionality of the model accordingly
-        if truncate:
-            i_max = int(self.D*truncate)
-            self.A = self.A[i_max:-i_max, i_max:-i_max] 
-            self.omega = self.omega[i_max:-i_max, i_max:-i_max] 
-            self.D = len(self.A)
             
         return self
-        
-    def diagonalize(self):
-        """
-        Diagonalizes the unitary/Hamiltonian. Uses Schur decomposition in the unitary case
-        and eigh for the Hamiltonian case for efficiency.
-        """
-
-        # Skips the method if already diagonalized
-        if self.diagonalization is not None:
-            return self
-
-        if self.unitary:
-            schur_decomposition = scp.linalg.schur(self.matrix)
-
-            # Extracts the eigenvalues in the diagonal
-            self.diagonalization = np.diag(schur_decomposition[0]), schur_decomposition[1]
-        else:
-            self.diagonalization = np.linalg.eigh(self.matrix) 
-            
-        return self
-        
+                    
     ############################
     # LEVEL SPACING STATISTICS #
     ############################
 
-    def get_level_statistics(self):
+    def get_level_spacing(self):
         """
         Evaluates the level spacing (+ ratio) distribution
         
@@ -277,7 +248,8 @@ class FreeModel:
 
     def _initialize_operator_eigenbasis(self, A, B, delete_diagonal):
         """Write down B in eigenbasis (or set it equal to A if undefined)."""
-        
+
+        # Projectors
         _, eig_states = self.diagonalization
 
         if B is None:
@@ -288,9 +260,8 @@ class FreeModel:
         B_no_diag = eig_states.conj().T @ B @ eig_states
 
         if delete_diagonal:
-            for i in range(self.D):
-                A_no_diag[i][i] = 0
-                B_no_diag[i][i] = 0
+            A_no_diag = A_no_diag - np.diag(A_no_diag)
+            B_no_diag = B_no_diag - np.diag(B_no_diag)
             
         return A_no_diag, B_no_diag
                 
